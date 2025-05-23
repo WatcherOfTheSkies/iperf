@@ -95,13 +95,6 @@ typedef struct {
 } error;
 static error global_error = { NULL, 0 };
 
-#ifndef LLONG_MAX
-#define LLONG_MAX 9223372036854775807LL
-#endif
-#ifndef LLONG_MIN
-#define LLONG_MIN (-LLONG_MAX - 1LL)
-#endif
-
 CJSON_PUBLIC(const char *) cJSON_GetErrorPtr(void)
 {
     return (const char*) (global_error.json + global_error.position);
@@ -274,10 +267,12 @@ CJSON_PUBLIC(void) cJSON_Delete(cJSON *item)
         if (!(item->type & cJSON_IsReference) && (item->valuestring != NULL))
         {
             global_hooks.deallocate(item->valuestring);
+            item->valuestring = NULL;
         }
         if (!(item->type & cJSON_StringIsConst) && (item->string != NULL))
         {
             global_hooks.deallocate(item->string);
+            item->string = NULL;
         }
         global_hooks.deallocate(item);
         item = next;
@@ -370,17 +365,17 @@ loop_end:
     item->valuedouble = number;
 
     /* use saturation in case of overflow */
-    if (number >= LLONG_MAX)
+    if (number >= INT_MAX)
     {
-        item->valueint = LLONG_MAX;
+        item->valueint = INT_MAX;
     }
-    else if (number <= (double)LLONG_MIN)
+    else if (number <= (double)INT_MIN)
     {
-        item->valueint = LLONG_MIN;
+        item->valueint = INT_MIN;
     }
     else
     {
-        item->valueint = (int64_t)number;
+        item->valueint = (int)number;
     }
 
     item->type = cJSON_Number;
@@ -392,27 +387,33 @@ loop_end:
 /* don't ask me, but the original cJSON_SetNumberValue returns an integer or double */
 CJSON_PUBLIC(double) cJSON_SetNumberHelper(cJSON *object, double number)
 {
-    if (number >= LLONG_MAX)
+    if (number >= INT_MAX)
     {
-        object->valueint = LLONG_MAX;
+        object->valueint = INT_MAX;
     }
-    else if (number <= (double)LLONG_MIN)
+    else if (number <= (double)INT_MIN)
     {
-        object->valueint = LLONG_MIN;
+        object->valueint = INT_MIN;
     }
     else
     {
-        object->valueint = (int64_t)number;
+        object->valueint = (int)number;
     }
 
     return object->valuedouble = number;
 }
 
+/* Note: when passing a NULL valuestring, cJSON_SetValuestring treats this as an error and return NULL */
 CJSON_PUBLIC(char*) cJSON_SetValuestring(cJSON *object, const char *valuestring)
 {
     char *copy = NULL;
     /* if object's type is not cJSON_String or is cJSON_IsReference, it should not set valuestring */
-    if (!(object->type & cJSON_String) || (object->type & cJSON_IsReference))
+    if ((object == NULL) || !(object->type & cJSON_String) || (object->type & cJSON_IsReference))
+    {
+        return NULL;
+    }
+    /* return NULL if the object is corrupted or valuestring is NULL */
+    if (object->valuestring == NULL || valuestring == NULL)
     {
         return NULL;
     }
@@ -463,9 +464,9 @@ static unsigned char* ensure(printbuffer * const p, size_t needed)
         return NULL;
     }
 
-    if (needed > SIZE_MAX)
+    if (needed > INT_MAX)
     {
-        /* sizes bigger than SIZE_MAX are currently not supported */
+        /* sizes bigger than INT_MAX are currently not supported */
         return NULL;
     }
 
@@ -480,12 +481,12 @@ static unsigned char* ensure(printbuffer * const p, size_t needed)
     }
 
     /* calculate new buffer size */
-    if (needed > (SIZE_MAX / 2))
+    if (needed > (INT_MAX / 2))
     {
-        /* overflow of int, use SIZE_MAX if possible */
-        if (needed <= SIZE_MAX)
+        /* overflow of int, use INT_MAX if possible */
+        if (needed <= INT_MAX)
         {
-            newsize = SIZE_MAX;
+            newsize = INT_MAX;
         }
         else
         {
@@ -573,10 +574,10 @@ static cJSON_bool print_number(const cJSON * const item, printbuffer * const out
     {
         length = sprintf((char*)number_buffer, "null");
     }
-    else if(d == (double)item->valueint)
-    {
-        length = sprintf((char*)number_buffer, "%" PRId64, item->valueint);
-    }
+	else if(d == (double)item->valueint)
+	{
+		length = sprintf((char*)number_buffer, "%d", item->valueint);
+	}
     else
     {
         /* Try 15 decimal places of precision to avoid nonsignificant nonzero digits */
@@ -899,6 +900,7 @@ fail:
     if (output != NULL)
     {
         input_buffer->hooks.deallocate(output);
+        output = NULL;
     }
 
     if (input_pointer != NULL)
@@ -1241,6 +1243,7 @@ static unsigned char *print(const cJSON * const item, cJSON_bool format, const i
 
         /* free the buffer */
         hooks->deallocate(buffer->buffer);
+        buffer->buffer = NULL;
     }
 
     return printed;
@@ -1249,11 +1252,13 @@ fail:
     if (buffer->buffer != NULL)
     {
         hooks->deallocate(buffer->buffer);
+        buffer->buffer = NULL;
     }
 
     if (printed != NULL)
     {
         hooks->deallocate(printed);
+        printed = NULL;
     }
 
     return NULL;
@@ -1294,6 +1299,7 @@ CJSON_PUBLIC(char *) cJSON_PrintBuffered(const cJSON *item, int prebuffer, cJSON
     if (!print_value(item, &p))
     {
         global_hooks.deallocate(p.buffer);
+        p.buffer = NULL;
         return NULL;
     }
 
@@ -1663,6 +1669,11 @@ static cJSON_bool parse_object(cJSON * const item, parse_buffer * const input_bu
             current_item->next = new_item;
             new_item->prev = current_item;
             current_item = new_item;
+        }
+
+        if (cannot_access_at_index(input_buffer, 1))
+        {
+            goto fail; /* nothing comes after the comma */
         }
 
         /* parse the name of the child */
@@ -2275,7 +2286,7 @@ CJSON_PUBLIC(cJSON_bool) cJSON_InsertItemInArray(cJSON *array, int which, cJSON 
 {
     cJSON *after_inserted = NULL;
 
-    if (which < 0)
+    if (which < 0 || newitem == NULL)
     {
         return false;
     }
@@ -2284,6 +2295,11 @@ CJSON_PUBLIC(cJSON_bool) cJSON_InsertItemInArray(cJSON *array, int which, cJSON 
     if (after_inserted == NULL)
     {
         return add_item_to_array(array, newitem);
+    }
+
+    if (after_inserted != array->child && after_inserted->prev == NULL) {
+        /* return false if after_inserted is a corrupted array item */
+        return false;
     }
 
     newitem->next = after_inserted;
@@ -2302,7 +2318,7 @@ CJSON_PUBLIC(cJSON_bool) cJSON_InsertItemInArray(cJSON *array, int which, cJSON 
 
 CJSON_PUBLIC(cJSON_bool) cJSON_ReplaceItemViaPointer(cJSON * const parent, cJSON * const item, cJSON * replacement)
 {
-    if ((parent == NULL) || (replacement == NULL) || (item == NULL))
+    if ((parent == NULL) || (parent->child == NULL) || (replacement == NULL) || (item == NULL))
     {
         return false;
     }
@@ -2446,17 +2462,17 @@ CJSON_PUBLIC(cJSON *) cJSON_CreateNumber(double num)
         item->valuedouble = num;
 
         /* use saturation in case of overflow */
-        if (num >= LLONG_MAX)
+        if (num >= INT_MAX)
         {
-            item->valueint = LLONG_MAX;
+            item->valueint = INT_MAX;
         }
-        else if (num <= (double)LLONG_MIN)
+        else if (num <= (double)INT_MIN)
         {
-            item->valueint = LLONG_MIN;
+            item->valueint = INT_MIN;
         }
         else
         {
-            item->valueint = (int64_t)num;
+            item->valueint = (int)num;
         }
     }
 
@@ -3127,4 +3143,5 @@ CJSON_PUBLIC(void *) cJSON_malloc(size_t size)
 CJSON_PUBLIC(void) cJSON_free(void *object)
 {
     global_hooks.deallocate(object);
+    object = NULL;
 }
