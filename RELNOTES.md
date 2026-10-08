@@ -1,6 +1,16 @@
 iperf3 Release Notes
 ====================
 
+iperf-3.22.1 2026-10-08
+-----------------------
+
+* Bug fixes
+
+    * Fixed a build failure with OpenSSL versions older than 3.0
+      (such as OpenSSL 1.1.1): the error-handling label in
+      decrypt_rsa_message() in iperf_auth.c was only compiled for
+      OpenSSL 3.x but is used unconditionally.
+
 iperf-3.22 2026-09-29
 ---------------------
 
